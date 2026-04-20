@@ -80,6 +80,7 @@ def generate_and_upload_data():
         # build the env once, reuse for every worker
         env = {
             **os.environ,
+            "PYTHONPATH": ".", 
             "OMP_NUM_THREADS": "1",
             "MKL_NUM_THREADS": "1",
             "OPENBLAS_NUM_THREADS": "1",
