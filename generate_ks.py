@@ -1,5 +1,3 @@
-# n_workers from SLURM. Use int(os.environ.get("SLURM_CPUS_PER_TASK", multiprocessing.cpu_count())) so it matches what SLURM actually allocated.
-
 import os
 import sys
 import random
