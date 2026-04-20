@@ -12,7 +12,8 @@
 mkdir -p logs
 
 # Load the python module
-module load python/3.11.10
+module purge
+module load python39
 
 # Create and activate a virtual environment
 if [ ! -d "venv" ]; then
