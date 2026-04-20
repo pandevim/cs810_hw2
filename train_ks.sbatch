@@ -26,7 +26,7 @@ pip install --upgrade pip
 pip install h5py numpy scipy huggingface_hub wandb matplotlib
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 
-export HF_TOKEN="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"
+export HF_TOKEN="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"
 export WANDB_API_KEY="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"
 
 python -u train_ks.py
