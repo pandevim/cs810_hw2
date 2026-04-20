@@ -75,6 +75,8 @@ def generate_and_upload_data():
         samples_per_worker = total_samples // n_workers
         remainder = total_samples % n_workers
 
+        os.makedirs("logs/workers", exist_ok=True)
+
         # build the env once, reuse for every worker
         env = {
             **os.environ,
@@ -101,7 +103,7 @@ def generate_and_upload_data():
             if extra_args:
                 cmd.extend(extra_args)
 
-            log_file = open(f"worker_{mode}_{i}.log", "w")
+            log_file = open(f"logs/workers/worker_{mode}_{i}.log", "w")
             log_files.append(log_file)
 
             processes.append(subprocess.Popen(
