@@ -209,7 +209,7 @@ if __name__ == "__main__":
     # Sync the SLURM stdout/stderr files live as they're written
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     if slurm_job_id:
-        for path in glob.glob(f"logs/ani_data_generation_{slurm_job_id}.*"):
+        for path in glob.glob(f"logs/generate_ks_{slurm_job_id}.*"):
             wandb.save(path, policy="live")
 
     try:
