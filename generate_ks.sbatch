@@ -22,7 +22,8 @@ fi
 source venv/bin/activate
 
 pip install --upgrade pip
-pip install h5py numpy huggingface_hub wandb
+pip install h5py numpy scipy huggingface_hub wandb
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 export HF_TOKEN="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"
 export WANDB_API_KEY="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"
