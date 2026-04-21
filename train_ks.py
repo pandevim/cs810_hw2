@@ -111,13 +111,18 @@ class KSDataset(Dataset):
     """
     Loads Kuramoto-Sivashinsky trajectories from an HDF5 file.
 
-    Each sample is a pair (u(t - 4Δt), Δu(t)) where
-        Δu(t) = u(t) − u(t − 4Δt),  normalised by OUTPUT_FACTOR.
+    Each sample is a pair (u(t), Δu) where Δu = u(t + step_skip·dt) − u(t),
+    normalised by OUTPUT_FACTOR. `step_skip` is picked per file so that the
+    physical Δt spanned by the prediction (`step_skip · dt_file`) is ≈
+    TARGET_PHYSICAL_DT on every split — the train file is saved at a coarser
+    dt than val/test, so a hard-coded step_skip would make the conditioning
+    dt_eff inconsistent across splits.
 
-    The file stores keys like 'pde_{idx}' with attrs 'L' and 'dt'.
+    The file stores `t`, `x`, `dx`, `dt` as *datasets* in the mode group
+    (not HDF5 attrs), so dt and L are read from those.
     """
-    OUTPUT_FACTOR = 0.3 # Table 3 (Appendix D.1 in Lippe et al.)
-    STEP_SKIP     = 4 # predict every 4th solver step
+    OUTPUT_FACTOR       = 0.3 # Table 3 (Appendix D.1 in Lippe et al.)
+    TARGET_PHYSICAL_DT  = 1.6 # ≈ step_skip=4 on train (dt≈0.39), step_skip=8 on val/test (dt≈0.2)
 
     def __init__(self, h5_path: str, n_init_per_traj: int = 100):
         super().__init__()
@@ -132,26 +137,32 @@ class KSDataset(Dataset):
                     group = f[mode]
                     break
 
+            # dt / L live as datasets inside the group (NOT attrs)
+            t_arr = np.asarray(group["t"])
+            x_arr = np.asarray(group["x"])
+            t_row = t_arr[0] if t_arr.ndim == 2 else t_arr
+            x_row = x_arr[0] if x_arr.ndim == 2 else x_arr
+            self.dt_file = float(t_row[1] - t_row[0])
+            self.L       = float(x_row[-1] - x_row[0] + (x_row[1] - x_row[0]))
+
+            # step_skip chosen so that step_skip * dt_file ≈ TARGET_PHYSICAL_DT
+            self.step_skip = max(1, int(round(self.TARGET_PHYSICAL_DT / self.dt_file)))
+
             self.keys = sorted([k for k in group.keys() if k.startswith("pde")])
             # preload everything into RAM for speed
             self.data = []
-            self.params = []
             for k in self.keys:
                 ds = group[k]
                 trajs = np.array(ds, dtype=np.float32)
-                L = float(ds.attrs.get("L", 64.0))
-                dt = float(ds.attrs.get("dt", 0.2))
-
-                # If it's batched (N, nt, nx), unpack it
                 if trajs.ndim == 3:
                     for i in range(trajs.shape[0]):
                         self.data.append(torch.from_numpy(trajs[i]))
-                        self.params.append((L, dt))
                 else:
                     self.data.append(torch.from_numpy(trajs))
-                    self.params.append((L, dt))
 
         self.nx = self.data[0].shape[1] # 256
+        print(f"[KSDataset] {h5_path}: dt_file={self.dt_file:.4f}, L={self.L:.2f}, "
+              f"step_skip={self.step_skip}, dt_eff={self.step_skip*self.dt_file:.4f}")
 
     def __len__(self):
         return len(self.data) * self.n_init
@@ -159,20 +170,20 @@ class KSDataset(Dataset):
     def __getitem__(self, idx):
         traj_idx = idx // self.n_init
         traj     = self.data[traj_idx] # (nt, nx)
-        L, dt    = self.params[traj_idx]
         nt       = traj.shape[0]
+        step     = self.step_skip
 
-        # random starting point (must leave room for +STEP_SKIP)
-        max_t = nt - self.STEP_SKIP
+        # random starting point (must leave room for +step_skip)
+        max_t = nt - step
         t0    = random.randint(0, max_t - 1)
 
         u_prev = traj[t0] # (nx,)
-        u_next = traj[t0 + self.STEP_SKIP] # (nx,)
+        u_next = traj[t0 + step] # (nx,)
         delta  = (u_next - u_prev) / self.OUTPUT_FACTOR # normalised target
 
-        # conditioning scalars
-        dx = L / self.nx
-        dt_eff = dt * self.STEP_SKIP # effective Δt (≈0.8 s)
+        # conditioning scalars — physically honest and ~constant across splits
+        dx     = self.L / self.nx
+        dt_eff = self.dt_file * step
 
         # shapes: (1, nx) for conv1d
         return (u_prev.unsqueeze(0), # input
@@ -530,7 +541,7 @@ class EMA:
 
 OUTPUT_FACTOR = 0.3
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, ema, device):
     model.train()
     total_loss, n = 0.0, 0
     for u_prev, cond, delta in loader:
@@ -540,6 +551,7 @@ def train_one_epoch(model, loader, optimizer, device):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        ema.update(model)                         # per-step EMA update
         total_loss += loss.item() * u_prev.size(0)
         n += u_prev.size(0)
     return total_loss / n
@@ -557,7 +569,7 @@ def evaluate(model, loader, device):
     return total_loss / n
 
 @torch.no_grad()
-def rollout(model, traj, L, dt, device, output_factor=0.3, step_skip=4):
+def rollout(model, traj, L, dt, device, output_factor=0.3, target_physical_dt=1.6):
     """
     Autoregressively roll out the model over an entire trajectory.
     traj: (nt, nx) ground-truth tensor
@@ -566,6 +578,7 @@ def rollout(model, traj, L, dt, device, output_factor=0.3, step_skip=4):
     model.eval()
     nx = traj.shape[1]
     dx = L / nx
+    step_skip = max(1, int(round(target_physical_dt / dt)))
     dt_eff = dt * step_skip
 
     u = traj[0].unsqueeze(0).unsqueeze(0).to(device)        # (1,1,nx)
@@ -595,7 +608,7 @@ def train_model(
     data_dir="data",
     epochs=400, batch_size=128,
     lr_start=1e-4, lr_end=1e-6,
-    weight_decay=1e-5, ema_decay=0.995,
+    weight_decay=1e-5, ema_decay=0.9999,
     device=None,
     ckpt_dir="checkpoints",
     sync_every=20, # push to HF every N epochs
@@ -659,8 +672,7 @@ def train_model(
 
     upload_thread = None
     for epoch in range(start_epoch, epochs + 1):
-        train_loss = train_one_epoch(model, train_dl, optimizer, device)
-        ema.update(model)
+        train_loss = train_one_epoch(model, train_dl, optimizer, ema, device)
         scheduler.step()
 
         ema.apply(model)

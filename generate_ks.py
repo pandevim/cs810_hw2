@@ -181,6 +181,35 @@ def generate_and_upload_data():
         os.remove(f)
     print("\n✓ Cleaned up temporary part files")
 
+    # Log the physical dt/L of each produced split so asymmetry is visible at the source
+    for fn in filenames:
+        local_path = f"data/{fn}"
+        if not os.path.exists(local_path):
+            continue
+        with h5py.File(local_path, "r") as f:
+            group = f
+            for m in ["train", "valid", "test"]:
+                if m in f:
+                    group = f[m]
+                    mode = m
+                    break
+            t_arr = np.asarray(group["t"])
+            x_arr = np.asarray(group["x"])
+            t_row = t_arr[0] if t_arr.ndim == 2 else t_arr
+            x_row = x_arr[0] if x_arr.ndim == 2 else x_arr
+            dt_file = float(t_row[1] - t_row[0])
+            L       = float(x_row[-1] - x_row[0] + (x_row[1] - x_row[0]))
+            nt      = int(t_row.shape[0])
+            pde_key = [k for k in group.keys() if k.startswith("pde_")][0]
+            n_traj  = int(group[pde_key].shape[0])
+        print(f"  [{mode}] dt={dt_file:.4f}, L={L:.2f}, nt={nt}, n_traj={n_traj}")
+        wandb.log({
+            f"{mode}/dt":     dt_file,
+            f"{mode}/L":      L,
+            f"{mode}/nt":     nt,
+            f"{mode}/n_traj": n_traj,
+        })
+
     # Upload
     for filepath in glob.glob("data/KS_*.h5"):
         fn = os.path.basename(filepath)
